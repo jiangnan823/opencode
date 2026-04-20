@@ -537,6 +537,16 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       },
     },
     {
+      title: "Cycle permission mode",
+      value: "permission.cycle",
+      keybind: "permission_mode_cycle",
+      category: "Agent",
+      hidden: true,
+      onSelect: () => {
+        local.cyclePermissionMode(1)
+      },
+    },
+    {
       title: "Agent cycle reverse",
       value: "agent.cycle.reverse",
       keybind: "agent_cycle_reverse",

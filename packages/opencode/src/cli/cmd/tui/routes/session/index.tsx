@@ -121,6 +121,7 @@ export function Session() {
   const sync = useSync()
   const event = useEvent()
   const project = useProject()
+  const local = useLocal()
   const tuiConfig = useTuiConfig()
   const kv = useKV()
   const { theme } = useTheme()
@@ -141,8 +142,13 @@ export function Session() {
     if (session()?.parentID) return []
     return children().flatMap((x) => sync.data.question[x.id] ?? [])
   })
-  const visible = createMemo(() => !session()?.parentID && permissions().length === 0 && questions().length === 0)
-  const disabled = createMemo(() => permissions().length > 0 || questions().length > 0)
+  const auto = createMemo(() => {
+    const mode = local.permissionMode()
+    return mode === "auto" || mode === "bypass"
+  })
+  const gated = createMemo(() => (auto() ? [] : permissions()))
+  const visible = createMemo(() => !session()?.parentID && gated().length === 0 && questions().length === 0)
+  const disabled = createMemo(() => gated().length > 0 || questions().length > 0)
 
   const pending = createMemo(() => {
     return messages().findLast((x) => x.role === "assistant" && !x.time.completed)?.id
@@ -205,6 +211,39 @@ export function Session() {
     }
     await sync.session.sync(route.sessionID)
     if (scroll) scroll.scrollBy(100_000)
+  })
+
+  const processed = new Map<string, Set<string>>()
+
+  function seen() {
+    const id = route.sessionID
+    if (!processed.has(id)) processed.set(id, new Set())
+    return processed.get(id)!
+  }
+
+  createEffect(
+    on(
+      () => route.sessionID,
+      (id, prev) => {
+        if (prev) processed.delete(prev)
+        processed.delete(id)
+      },
+      { defer: true },
+    ),
+  )
+
+  createEffect(() => {
+    const mode = local.permissionMode()
+    if (mode !== "auto" && mode !== "bypass") return
+    const reply = mode === "bypass" ? "always" : "once"
+    for (const item of permissions()) {
+      if (seen().has(item.id)) continue
+      seen().add(item.id)
+      void sdk.client.permission.reply({
+        requestID: item.id,
+        reply,
+      })
+    }
   })
 
   let lastSwitch: string | undefined = undefined
@@ -1158,10 +1197,10 @@ export function Session() {
               </For>
             </scrollbox>
             <box flexShrink={0}>
-              <Show when={permissions().length > 0}>
-                <PermissionPrompt request={permissions()[0]} />
+              <Show when={gated().length > 0}>
+                <PermissionPrompt request={gated()[0]} />
               </Show>
-              <Show when={permissions().length === 0 && questions().length > 0}>
+              <Show when={gated().length === 0 && questions().length > 0}>
                 <QuestionPrompt request={questions()[0]} />
               </Show>
               <Show when={session()?.parentID}>

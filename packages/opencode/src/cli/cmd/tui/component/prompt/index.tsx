@@ -926,7 +926,7 @@ export function Prompt(props: PromptProps) {
 
   const spinnerDef = createMemo(() => {
     const agent = local.agent.current()
-    const color = agent ? local.agent.color(agent.name) : theme.border
+    const color = local.permissionModeColor() ?? (agent ? local.agent.color(agent.name) : theme.border)
     return {
       frames: createFrames({
         color,
@@ -1351,6 +1351,11 @@ export function Prompt(props: PromptProps) {
                   <text fg={theme.text}>
                     {keybind.print("command_list")} <span style={{ fg: theme.textMuted }}>commands</span>
                   </text>
+                  <Show when={["auto", "bypass"].includes(local.permissionMode())}>
+                    <text fg={local.permissionModeColor() ?? theme.text}>
+                      {local.permissionMode()} <span style={{ fg: theme.textMuted }}>on</span>
+                    </text>
+                  </Show>
                 </Match>
                 <Match when={store.mode === "shell"}>
                   <text fg={theme.text}>

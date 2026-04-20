@@ -1,6 +1,6 @@
 import { createStore } from "solid-js/store"
 import { createSimpleContext } from "./helper"
-import { batch, createEffect, createMemo } from "solid-js"
+import { batch, createEffect, createMemo, createSignal } from "solid-js"
 import { useSync } from "@tui/context/sync"
 import { useTheme } from "@tui/context/theme"
 import { uniqueBy } from "remeda"
@@ -99,6 +99,9 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         },
       }
     })
+
+    type PermissionMode = "default" | "auto" | "bypass"
+    const [permissionMode, setPermissionMode] = createSignal<PermissionMode>("default")
 
     const model = iife(() => {
       const [modelStore, setModelStore] = createStore<{
@@ -420,6 +423,18 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       model,
       agent,
       mcp,
+      permissionMode,
+      setPermissionMode,
+      cyclePermissionMode(direction: 1 | -1) {
+        const modes: PermissionMode[] = ["default", "auto", "bypass"]
+        const index = modes.indexOf(permissionMode())
+        const next = direction === 1 ? (index + 1) % modes.length : (index - 1 + modes.length) % modes.length
+        setPermissionMode(modes[next])
+      },
+      permissionModeColor() {
+        if (permissionMode() === "auto") return RGBA.fromHex("#A855F7")
+        if (permissionMode() === "bypass") return RGBA.fromHex("#EF4444")
+      },
     }
     return result
   },
