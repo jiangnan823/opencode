@@ -34,15 +34,39 @@ jobs:
         run: |
           git remote add anomaly https://github.com/anomalyco/opencode.git
           git fetch anomaly dev
-          if ! git merge --no-ff -m "chore: merge anomaly/dev" anomaly/dev; then
+
+          if git merge --no-ff -m "chore: merge anomaly/dev" anomaly/dev; then
+            echo "Clean merge."
+            exit 0
+          fi
+
+          # 冲突了：判断是否只有 package.json 冲突（version bump 的常见情况）
+          CONFLICTS=$(git diff --name-only --diff-filter=U)
+          echo "Conflicts:"
+          echo "$CONFLICTS"
+          NON_PKG=$(echo "$CONFLICTS" | grep -v -E '(^|/)package\.json$' || true)
+
+          if [ -n "$NON_PKG" ]; then
+            echo "Non-package.json conflicts found, aborting:"
+            echo "$NON_PKG"
             git merge --abort
             gh label create upstream-sync --color FBCA04 --force || true
+            BODY=$(printf "冲突文件：\n\n\`\`\`\n%s\n\`\`\`\n\n其中非 package.json 文件需要手动解决。请本地 merge 后推送到 \`custom/agent-bypass-mode-devsync\`。" "$CONFLICTS")
             gh issue create \
-              --title "❌ 合并 anomaly/dev 冲突，需要手动解决" \
-              --body "Build workflow 自动合并失败，请在本地解决冲突后推送到 \`custom/agent-bypass-mode-devsync\`。" \
+              --title "❌ 合并 anomaly/dev 有代码冲突，需要手动解决" \
+              --body "$BODY" \
               --label upstream-sync
             exit 1
           fi
+
+          # 全部是 package.json 冲突，接受上游版本（我们后面会给 opencode 包重新加 -T）
+          echo "Only package.json conflicts — accepting upstream versions."
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            git checkout --theirs "$f"
+            git add "$f"
+          done <<< "$CONFLICTS"
+          git commit -m "chore: merge anomaly/dev (auto-resolved version conflicts)"
 
       - name: Bump -T version
         id: ver
