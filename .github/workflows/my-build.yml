@@ -1,4 +1,4 @@
-name: Build macOS CLI
+name: Build CLI
 
 on:
   workflow_dispatch:
@@ -13,8 +13,12 @@ permissions:
   issues: write
 
 jobs:
-  build:
-    runs-on: macos-14           # Apple silicon runner
+  sync:
+    name: Sync & bump
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      commit: ${{ steps.ver.outputs.commit }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -40,7 +44,6 @@ jobs:
             exit 0
           fi
 
-          # 冲突了：判断是否只有 package.json 冲突（version bump 的常见情况）
           CONFLICTS=$(git diff --name-only --diff-filter=U)
           echo "Conflicts:"
           echo "$CONFLICTS"
@@ -59,7 +62,6 @@ jobs:
             exit 1
           fi
 
-          # 全部是 package.json 冲突，接受上游版本（我们后面会给 opencode 包重新加 -T）
           echo "Only package.json conflicts — accepting upstream versions."
           while IFS= read -r f; do
             [ -z "$f" ] && continue
@@ -75,33 +77,83 @@ jobs:
           BASE=$(node -p "require('./package.json').version.replace(/-T.*$/,'')")
           NEW="${BASE}-T"
           node -e "const f='./package.json';const p=require(f);p.version='${NEW}';require('fs').writeFileSync(f, JSON.stringify(p,null,2)+'\n')"
-          echo "version=$NEW" >> "$GITHUB_OUTPUT"
           git add package.json
           git commit -m "chore: bump version to ${NEW}" || echo "no version change to commit"
+          echo "version=$NEW" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Push merged branch
         if: inputs.sync_upstream
         run: git push origin HEAD:custom/agent-bypass-mode-devsync
 
+  build:
+    name: Build ${{ matrix.target }}
+    needs: sync
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: darwin-arm64
+            archive_shell: bash
+          - os: windows-2022
+            target: windows-x64
+            archive_shell: pwsh
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.sync.outputs.commit }}
+          fetch-depth: 1
+
       - uses: ./.github/actions/setup-bun
 
-      - name: Build single target (macOS arm64)
+      - name: Build single target
         working-directory: packages/opencode
         env:
-          OPENCODE_VERSION: ${{ steps.ver.outputs.version }}
+          OPENCODE_VERSION: ${{ needs.sync.outputs.version }}
+        shell: bash
         run: bun run script/build.ts --single
 
-      - name: Zip binary
+      - name: Zip binary (macOS)
+        if: runner.os == 'macOS'
         working-directory: packages/opencode/dist
         run: |
-          cd opencode-darwin-arm64/bin
-          zip -r ../../opencode-darwin-arm64.zip *
+          cd opencode-${{ matrix.target }}/bin
+          zip -r ../../opencode-${{ matrix.target }}.zip *
+
+      - name: Zip binary (Windows)
+        if: runner.os == 'Windows'
+        working-directory: packages/opencode/dist
+        shell: pwsh
+        run: Compress-Archive -Path "opencode-${{ matrix.target }}/bin/*" -DestinationPath "opencode-${{ matrix.target }}.zip" -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: opencode-${{ matrix.target }}
+          path: packages/opencode/dist/opencode-${{ matrix.target }}.zip
+          retention-days: 7
+
+  release:
+    name: Release
+    needs: [sync, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Flatten artifacts
+        run: |
+          mkdir -p dist
+          find artifacts -name "*.zip" -exec cp {} dist/ \;
+          ls -la dist/
 
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ steps.ver.outputs.version }}
-          name: v${{ steps.ver.outputs.version }}
-          files: packages/opencode/dist/opencode-darwin-arm64.zip
+          tag_name: v${{ needs.sync.outputs.version }}
+          name: v${{ needs.sync.outputs.version }}
+          files: dist/*.zip
           generate_release_notes: true
           fail_on_unmatched_files: true
