@@ -1,0 +1,72 @@
+name: Watch anomaly/dev
+
+on:
+  schedule:
+    - cron: "0 0 * * *"       # 每天 UTC 00:00（北京 08:00），GitHub 定时有数十分钟延迟
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: custom/agent-bypass-mode-devsync
+          fetch-depth: 0
+
+      - name: Fetch anomaly/dev
+        run: |
+          git remote add anomaly https://github.com/anomalyco/opencode.git
+          git fetch anomaly dev --depth=100
+
+      - name: Compare
+        id: cmp
+        run: |
+          BASE=$(git rev-parse HEAD)
+          HEAD=$(git rev-parse anomaly/dev)
+          AHEAD=$(git rev-list --count "$BASE..anomaly/dev")
+          echo "ahead=$AHEAD" >> "$GITHUB_OUTPUT"
+          echo "head=$HEAD" >> "$GITHUB_OUTPUT"
+          echo "short=$(git rev-parse --short anomaly/dev)" >> "$GITHUB_OUTPUT"
+          if [ "$AHEAD" -gt 0 ]; then
+            git log --oneline --no-decorate "$BASE..anomaly/dev" > /tmp/commits.txt
+          fi
+
+      - name: Ensure label exists
+        if: steps.cmp.outputs.ahead != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh label create upstream-sync --color FBCA04 --description "Upstream sync notification" --force || true
+
+      - name: Create or update issue
+        if: steps.cmp.outputs.ahead != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TITLE="⬆️ anomaly/dev 有 ${{ steps.cmp.outputs.ahead }} 个新 commit（${{ steps.cmp.outputs.short }}）"
+          {
+            echo "上游最新: \`${{ steps.cmp.outputs.head }}\`"
+            echo
+            echo "新增提交："
+            echo
+            echo '```'
+            cat /tmp/commits.txt
+            echo '```'
+            echo
+            echo "需要同步时，手动触发 **Build macOS CLI** workflow。"
+          } > /tmp/body.md
+
+          EXISTING=$(gh issue list --label upstream-sync --state open --json number -q '.[0].number')
+          if [ -n "$EXISTING" ]; then
+            gh issue edit "$EXISTING" --title "$TITLE" --body-file /tmp/body.md
+          else
+            gh issue create --title "$TITLE" --body-file /tmp/body.md --label upstream-sync
+          fi
+
+      - name: Up to date
+        if: steps.cmp.outputs.ahead == '0'
+        run: echo "No new commits on anomaly/dev."

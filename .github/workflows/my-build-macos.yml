@@ -1,0 +1,81 @@
+name: Build macOS CLI
+
+on:
+  workflow_dispatch:
+    inputs:
+      sync_upstream:
+        description: "先合并 anomaly/dev 再构建"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  build:
+    runs-on: macos-14           # Apple silicon runner
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: custom/agent-bypass-mode-devsync
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Merge anomaly/dev
+        if: inputs.sync_upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git remote add anomaly https://github.com/anomalyco/opencode.git
+          git fetch anomaly dev
+          if ! git merge --no-ff -m "chore: merge anomaly/dev" anomaly/dev; then
+            git merge --abort
+            gh label create upstream-sync --color FBCA04 --force || true
+            gh issue create \
+              --title "❌ 合并 anomaly/dev 冲突，需要手动解决" \
+              --body "Build workflow 自动合并失败，请在本地解决冲突后推送到 \`custom/agent-bypass-mode-devsync\`。" \
+              --label upstream-sync
+            exit 1
+          fi
+
+      - name: Bump -T version
+        id: ver
+        run: |
+          cd packages/opencode
+          BASE=$(node -p "require('./package.json').version.replace(/-T.*$/,'')")
+          NEW="${BASE}-T"
+          node -e "const f='./package.json';const p=require(f);p.version='${NEW}';require('fs').writeFileSync(f, JSON.stringify(p,null,2)+'\n')"
+          echo "version=$NEW" >> "$GITHUB_OUTPUT"
+          git add package.json
+          git commit -m "chore: bump version to ${NEW}" || echo "no version change to commit"
+
+      - name: Push merged branch
+        if: inputs.sync_upstream
+        run: git push origin HEAD:custom/agent-bypass-mode-devsync
+
+      - uses: ./.github/actions/setup-bun
+
+      - name: Build single target (macOS arm64)
+        working-directory: packages/opencode
+        run: bun run script/build.ts --single
+
+      - name: Zip binary
+        working-directory: packages/opencode/dist
+        run: |
+          cd opencode-darwin-arm64/bin
+          zip -r ../../opencode-darwin-arm64.zip *
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.ver.outputs.version }}
+          name: v${{ steps.ver.outputs.version }}
+          files: packages/opencode/dist/opencode-darwin-arm64.zip
+          generate_release_notes: true
+          fail_on_unmatched_files: true
