@@ -87,6 +87,8 @@ jobs:
 
       - name: Build single target (macOS arm64)
         working-directory: packages/opencode
+        env:
+          OPENCODE_VERSION: ${{ steps.ver.outputs.version }}
         run: bun run script/build.ts --single
 
       - name: Zip binary
