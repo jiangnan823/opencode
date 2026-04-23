@@ -113,7 +113,7 @@ jobs:
         env:
           OPENCODE_VERSION: ${{ needs.sync.outputs.version }}
         shell: bash
-        run: bun run script/build.ts --single
+        run: bun run script/build.ts --single --skip-install
 
       - name: Zip binary (macOS)
         if: runner.os == 'macOS'
