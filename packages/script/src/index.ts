@@ -31,12 +31,18 @@ const CHANNEL = await (async () => {
   if (env.OPENCODE_VERSION && !env.OPENCODE_VERSION.startsWith("0.0.0-")) return "latest"
   return await $`git branch --show-current`.text().then((x) => x.trim())
 })()
+const IS_CUSTOM_MAINLINE = CHANNEL === "custom/agent-bypass-mode"
+const IS_CUSTOM = CHANNEL.startsWith("custom/")
 const IS_PREVIEW = CHANNEL !== "latest"
+const PREVIEW_CHANNEL = CHANNEL.replace(/[^0-9A-Za-z-]+/g, "-").replace(/^-+|-+$/g, "") || "preview"
+const now = new Date()
+const PREVIEW_STAMP = `${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}`
 
 const VERSION = await (async () => {
   if (env.OPENCODE_VERSION) return env.OPENCODE_VERSION
-  if (CHANNEL.startsWith("custom/")) return opencodePkg.version
-  if (IS_PREVIEW) return `0.0.0-${CHANNEL}-${new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "")}`
+  if (IS_CUSTOM_MAINLINE) return opencodePkg.version
+  if (IS_CUSTOM && IS_PREVIEW) return `${opencodePkg.version}.${PREVIEW_STAMP}`
+  if (IS_PREVIEW) return `0.0.0-${PREVIEW_CHANNEL}-${PREVIEW_STAMP}`
   const version = await fetch("https://registry.npmjs.org/opencode-ai/latest")
     .then((res) => {
       if (!res.ok) throw new Error(res.statusText)

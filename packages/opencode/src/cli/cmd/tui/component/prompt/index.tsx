@@ -890,8 +890,12 @@ export function Prompt(props: PromptProps) {
     return
   }
 
+  const mode = createMemo(() => local.permissionModeColor())
+
   const highlight = createMemo(() => {
     if (keybind.leader) return theme.border
+    const color = mode()
+    if (color) return color
     if (store.mode === "shell") return theme.primary
     const agent = local.agent.current()
     if (!agent) return theme.border
@@ -911,7 +915,11 @@ export function Prompt(props: PromptProps) {
     () => !!local.agent.current() && store.mode === "normal" && showVariant(),
     animationsEnabled,
   )
-  const borderHighlight = createMemo(() => tint(theme.border, highlight(), agentMetaAlpha()))
+  const borderAlpha = createFadeIn(
+    () => !keybind.leader && (!!mode() || store.mode === "shell" || !!local.agent.current()),
+    animationsEnabled,
+  )
+  const borderHighlight = createMemo(() => tint(theme.border, highlight(), borderAlpha()))
 
   const placeholderText = createMemo(() => {
     if (props.showPlaceholder === false) return undefined

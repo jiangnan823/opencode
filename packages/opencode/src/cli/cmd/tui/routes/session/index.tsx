@@ -95,6 +95,19 @@ addDefaultParsers(parsers.parsers)
 const GO_UPSELL_LAST_SEEN_AT = "go_upsell_last_seen_at"
 const GO_UPSELL_DONT_SHOW = "go_upsell_dont_show"
 const GO_UPSELL_WINDOW = 86_400_000 // 24 hrs
+const AUTO_PERMISSION_REPLY_TIMEOUT = 10_000
+const AUTO_PERMISSION_REPLY_TIMEOUT_ERROR = "AUTO_PERMISSION_REPLY_TIMEOUT"
+type AutoPermissionState = "replying" | "replied" | "failed"
+
+function withAutoPermissionReplyTimeout<T>(promise: Promise<T>) {
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeout = setTimeout(() => reject(new Error(AUTO_PERMISSION_REPLY_TIMEOUT_ERROR)), AUTO_PERMISSION_REPLY_TIMEOUT)
+  })
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    if (timeout !== undefined) clearTimeout(timeout)
+  })
+}
 
 const context = createContext<{
   width: number
@@ -147,7 +160,13 @@ export function Session() {
     const mode = local.permissionMode()
     return mode === "auto" || mode === "bypass"
   })
-  const gated = createMemo(() => (auto() ? [] : permissions()))
+  const [autoPermissionStateVersion, setAutoPermissionStateVersion] = createSignal(0)
+  const gated = createMemo(() => {
+    if (!auto()) return permissions()
+    autoPermissionStateVersion()
+    const state = autoPermissionState()
+    return permissions().filter((item) => state.get(item.id) === "failed")
+  })
   const visible = createMemo(() => !session()?.parentID && gated().length === 0 && questions().length === 0)
   const disabled = createMemo(() => gated().length > 0 || questions().length > 0)
 
@@ -226,36 +245,92 @@ export function Session() {
     })
   })
 
-  const processed = new Map<string, Set<string>>()
+  const autoPermissionStates = new Map<string, Map<string, AutoPermissionState>>()
 
-  function seen() {
+  function autoPermissionState() {
     const id = route.sessionID
-    if (!processed.has(id)) processed.set(id, new Set())
-    return processed.get(id)!
+    if (!autoPermissionStates.has(id)) autoPermissionStates.set(id, new Map())
+    return autoPermissionStates.get(id)!
+  }
+
+  function setAutoPermissionState(requestID: string, state?: AutoPermissionState) {
+    const current = autoPermissionState()
+    let changed = false
+    if (state === undefined) {
+      changed = current.delete(requestID)
+    } else if (current.get(requestID) !== state) {
+      current.set(requestID, state)
+      changed = true
+    }
+    if (!changed) return
+    setAutoPermissionStateVersion((version) => version + 1)
   }
 
   createEffect(
     on(
       () => route.sessionID,
       (id, prev) => {
-        if (prev) processed.delete(prev)
-        processed.delete(id)
+        batch(() => {
+          if (prev) autoPermissionStates.delete(prev)
+          autoPermissionStates.delete(id)
+          setAutoPermissionStateVersion((version) => version + 1)
+        })
       },
       { defer: true },
     ),
   )
 
   createEffect(() => {
+    const active = new Set(permissions().map((item) => item.id))
+    const current = autoPermissionState()
+    let changed = false
+    for (const id of current.keys()) {
+      if (active.has(id)) continue
+      current.delete(id)
+      changed = true
+    }
+    if (changed) setAutoPermissionStateVersion((version) => version + 1)
+  })
+
+  createEffect(() => {
     const mode = local.permissionMode()
     if (mode !== "auto" && mode !== "bypass") return
     const reply = mode === "bypass" ? "always" : "once"
     for (const item of permissions()) {
-      if (seen().has(item.id)) continue
-      seen().add(item.id)
-      void sdk.client.permission.reply({
-        requestID: item.id,
-        reply,
-      })
+      const state = autoPermissionState().get(item.id)
+      if (state === "replying" || state === "replied" || state === "failed") continue
+      const sessionID = route.sessionID
+      const requestStillActive = () =>
+        route.sessionID === sessionID && permissions().some((permission) => permission.id === item.id)
+      setAutoPermissionState(item.id, "replying")
+      void withAutoPermissionReplyTimeout(
+        sdk.client.permission.reply(
+          {
+            requestID: item.id,
+            reply,
+          },
+          { throwOnError: true },
+        ),
+      )
+        .then((result) => {
+          if (!requestStillActive()) return
+          if (result.data !== true) throw new Error("Permission request was not acknowledged")
+          setAutoPermissionState(item.id, "replied")
+        })
+        .catch((error) => {
+          if (!requestStillActive()) return
+          setAutoPermissionState(item.id, "failed")
+          const message =
+            error instanceof Error
+              ? error.message === AUTO_PERMISSION_REPLY_TIMEOUT_ERROR
+                ? "本地等待超时，请手动确认"
+                : error.message
+              : "未知错误"
+          toast.show({
+            message: `自动授权失败，已恢复手动确认：${item.permission} (${message})`,
+            variant: "error",
+          })
+        })
     }
   })
 
@@ -388,8 +463,6 @@ export function Session() {
       scroll.scrollTo(scroll.scrollHeight)
     }, 50)
   }
-
-  const local = useLocal()
 
   function moveFirstChild() {
     if (children().length === 1) return
